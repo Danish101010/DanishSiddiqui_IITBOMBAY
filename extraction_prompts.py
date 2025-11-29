@@ -6,38 +6,37 @@ EXTRACTION_USER_PROMPT_TEMPLATE = """Input:
 {input_json}
 
 Task:
-From the supplied images extract a JSON object for **this page** containing the list of bill line items visible on the page.
+From the supplied images, extract a JSON object for **this page** containing a list of bill line items, where **each visible printed line** is extracted as a separate JSON object in the output, even if the line is incomplete, ambiguous, or does not contain all fields. Do not merge or combine lines, and do not skip any visible line that could represent a bill item.
 
-IMPORTANT: Examine ALL images carefully. Look for ANY items, services, medicines, tests, charges, or line items with names and amounts. Even if the layout is unconventional, extract ALL visible line items.
+IMPORTANT: Examine ALL images carefully. For each visible line (row) that could represent a bill item, extract it as a separate entry in the output, even if the line is incomplete, ambiguous, or missing some values. Do not attempt to merge wrapped lines or combine information from multiple lines. If a line is ambiguous or missing values, set those fields to null.
 
 Rules (strict):
-1. Inspect the **images** visually. Use the full page first; confirm ambiguous numbers by checking the relevant crop images.
-2. Extract EVERY line item you see - medicines, services, tests, procedures, consultations, room charges, etc.
+1. Inspect the **images** visually. For each visible printed line (row) that could represent a bill item, extract it as a separate JSON object in the output.
+2. Do NOT merge or combine lines, even if the item name wraps across lines. Treat each printed line as a separate entry.
 3. Each bill item must have:
-   - "item_name": text exactly as printed on the bill (trim whitespace). Include full item description.
-   - "item_amount": Net Amount after discount as printed (float or null).
-   - "item_rate": Rate as printed (float or null).
-   - "item_quantity": Quantity as printed (float or null).
+     - "item_name": text exactly as printed on the line (trim whitespace). Include the full text of the line.
+     - "item_amount": Net Amount after discount as printed (float or null).
+     - "item_rate": Rate as printed (float or null).
+     - "item_quantity": Quantity as printed (float or null).
 4. If the printed layout is tabular, prefer the right-most numeric column as item_amount.
 5. Normalize numeric formats: remove currency symbols and thousands separators. Output floats with two decimals (e.g., 1234.50).
-6. If the item name wraps across lines, combine visually adjacent lines that belong to the same row.
-7. If a numeric value is illegible or missing, set it to null (do not guess). Only infer rate or quantity if Rate * Quantity equals Amount within 1% AND all three numbers are clearly readable.
-8. If multiple distinct numeric candidates are present near the item text, choose the numeric that aligns visually in the same row (same baseline) or the rightmost numeric.
-9. For page_type, choose the most appropriate: "Bill Detail" (has itemized list), "Final Bill" (summary with totals), "Pharmacy" (medicine list), or "Other" (only if truly unclear).
-10. Output EXACT JSON and nothing else.
+6. If a numeric value is illegible or missing, set it to null (do not guess). Only infer rate or quantity if Rate * Quantity equals Amount within 1% AND all three numbers are clearly readable on the same line.
+7. If multiple distinct numeric candidates are present near the item text, choose the numeric that aligns visually in the same row (same baseline) or the rightmost numeric.
+8. For page_type, choose the most appropriate: "Bill Detail" (has itemized list), "Final Bill" (summary with totals), "Pharmacy" (medicine list), or "Other" (only if truly unclear).
+9. Output EXACT JSON and nothing else.
 
-REMINDER: If you see ANY items in the images, you MUST extract them. Empty bill_items should ONLY occur if there are genuinely no line items visible at all.
+REMINDER: If you see ANY lines in the images that could represent bill items, you MUST extract each line as a separate entry. Empty bill_items should ONLY occur if there are genuinely no line items visible at all.
 
 Return JSON:
 {{
-  "page_no": "{page_no}",
-  "page_type": "Bill Detail | Final Bill | Pharmacy | Other",
-  "bill_items": [
-    {{
-      "item_name": "string",
-      "item_amount": 123.45 or null,
-      "item_rate": 12.34 or null,
-      "item_quantity": 2.00 or null
+    "page_no": "{page_no}",
+    "page_type": "Bill Detail | Final Bill | Pharmacy | Other",
+    "bill_items": [
+        {{
+            "item_name": "string",
+            "item_amount": 123.45 or null,
+            "item_rate": 12.34 or null,
+            "item_quantity": 2.00 or null
     }},
     ...
   ]

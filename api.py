@@ -131,121 +131,80 @@ def send_gemini_multimodal(
                 print("Max retries reached, quota still exceeded")
                 raise
     
-    # Extract JSON text from response robustly (avoid quick-accessor failures)
-    response_text = ""
+    # Extract JSON from response
     try:
-        # Preferred: quick accessor
         response_text = response.text.strip()
-    except Exception:
-        # Fallback: try to assemble text from candidate objects or the response repr
-        parts = []
+    except ValueError as ve:
+        # The quick accessor `response.text` can raise when no text `Part` is available
+        # (see google.generativeai.types.generation_types). Fall back to inspecting
+        # the lower-level candidates so we can log useful debug info and avoid crashing.
+        print(f"Warning: response.text accessor failed: {ve}")
+
+        # Try to extract text from candidates/parts manually if present
+        response_text = ""
         try:
-            if hasattr(response, 'candidates') and response.candidates:
-                for c in response.candidates:
-                    # candidate may be dict-like or object
-                    if isinstance(c, dict):
-                        # common keys
-                        if 'content' in c:
-                            parts.append(c['content'])
-                        elif 'text' in c:
-                            parts.append(c['text'])
-                        else:
-                            parts.append(json.dumps(c))
-                    else:
-                        # object candidate: try common attributes
-                        text_attr = None
-                        for attr in ('content', 'text', 'display', 'output'):
-                            if hasattr(c, attr):
-                                val = getattr(c, attr)
-                                # if display is dict-like, try to extract printable text
-                                if isinstance(val, dict):
-                                    # try nested keys
-                                    for k in ('text', 'content', 'display_text'):
-                                        if k in val:
-                                            text_attr = val[k]
-                                            break
-                                    if text_attr:
-                                        break
-                                else:
-                                    text_attr = val
-                                    break
-                        if text_attr:
-                            parts.append(str(text_attr))
-                        else:
-                            parts.append(str(c))
-            else:
-                # Last resort: use string conversion
-                parts.append(str(response))
-        except Exception:
-            parts = [str(response)]
+            candidates = getattr(response, 'candidates', None)
+            if candidates:
+                cand = candidates[0]
+                fr = getattr(cand, 'finish_reason', None)
+                safety = getattr(cand, 'safety_ratings', None)
+                print(f"Candidate finish_reason: {fr}, safety_ratings: {safety}")
 
-        response_text = "\n".join(parts).strip()
+                parts = getattr(cand, 'content', None)
+                # Some SDK objects expose `content.parts` as an attribute
+                if parts and hasattr(parts, 'parts'):
+                    parts_list = parts.parts
+                else:
+                    # Try `cand.content.parts` shape
+                    parts_list = getattr(cand.content, 'parts', None) if cand and getattr(cand, 'content', None) else None
 
-    # Remove markdown code fences if present
+                if parts_list:
+                    texts = []
+                    for p in parts_list:
+                        if hasattr(p, 'text'):
+                            texts.append(p.text)
+                        elif isinstance(p, dict) and 'text' in p:
+                            texts.append(p['text'])
+                    response_text = "\n".join(texts).strip()
+        except Exception as e:
+            print(f"Failed to inspect response.candidates manually: {e}")
+
+        # If still empty, raise a clear ValueError so upstream can handle it
+        if not response_text:
+            raise ValueError(str(ve))
+    
+    # Remove markdown code blocks if present
     if response_text.startswith('```json'):
         response_text = response_text[7:]
     elif response_text.startswith('```'):
         response_text = response_text[3:]
-
+    
     if response_text.endswith('```'):
         response_text = response_text[:-3]
-
+    
     response_text = response_text.strip()
-
-    # Try multiple sanitization strategies to handle malformed LLM output
-    import re
-    def try_loads(s):
-        try:
-            return json.loads(s)
-        except Exception:
-            return None
-
-    extracted_data = try_loads(response_text)
-    if extracted_data is None:
-        # Extract the first {...} block if the model prepended text
-        first_brace = response_text.find('{')
-        last_brace = response_text.rfind('}')
-        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-            candidate = response_text[first_brace:last_brace+1]
-            # Remove trailing commas before closing braces/brackets
-            candidate = re.sub(r',\s*(\}|\])', r'\1', candidate)
-            extracted_data = try_loads(candidate)
-
-    if extracted_data is None:
-        # More aggressive fixes: try to remove extraneous text between items
-        candidate = re.sub(r'\n+', '\n', response_text)
-        candidate = re.sub(r',\s*,+', ',', candidate)
-        candidate = re.sub(r',\s*(\}|\])', r'\1', candidate)
-        candidate = re.sub(r'\,\s*\}', '}', candidate)
-        extracted_data = try_loads(candidate)
-
-    if extracted_data is None:
-        # If parsing still fails, persist the raw response to disk for debugging
-        print(f"JSON decode error: unable to parse response as JSON")
+    
+    try:
+        extracted_data = json.loads(response_text)
+    except json.JSONDecodeError as e:
+        print(f"JSON decode error: {e}")
         print(f"Response text (first 2000 chars): {response_text[:2000]}")
+        
+        # Try to salvage partial JSON by adding closing braces
         try:
-            from datetime import datetime
-            import uuid
-            debug_dir = Path("debug_responses")
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            fname = debug_dir / f"gemini_raw_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}.txt"
-            with open(fname, 'w', encoding='utf-8') as fh:
-                fh.write(response_text)
-            print(f"Saved raw Gemini response to: {fname}")
-        except Exception as _:
-            pass
-
-        usage = getattr(response, 'usage_metadata', None)
-        return {
-            'extracted_data': {
-                'raw_text': response_text
-            },
-            'token_usage': {
-                'input_tokens': getattr(usage, 'prompt_token_count', 0) if usage is not None else 0,
-                'output_tokens': getattr(usage, 'candidates_token_count', 0) if usage is not None else 0,
-                'total_tokens': getattr(usage, 'total_token_count', 0) if usage is not None else 0
-            }
-        }
+            # Count open braces and brackets
+            open_braces = response_text.count('{') - response_text.count('}')
+            open_brackets = response_text.count('[') - response_text.count(']')
+            
+            fixed_text = response_text
+            # Add missing closures
+            fixed_text += '}' * open_braces
+            fixed_text += ']' * open_brackets
+            
+            extracted_data = json.loads(fixed_text)
+            print("Successfully salvaged truncated JSON response")
+        except:
+            raise ValueError(f"Failed to parse Gemini response as JSON: {e}")
     
     # Get token usage
     token_usage = {
