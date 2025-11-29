@@ -13,7 +13,13 @@ fi
 # Join all arguments into a single string
 cmd="$*"
 
-# Replace literal occurrences of "$PORT" (dollar-sign-P-O-R-T) with the
+# Normalize escaped "\$PORT" (a backslash before $) to plain "$PORT" so
+# subsequent replacement will work whether the Procfile/command supplied
+# "$PORT" or "\$PORT". Some deploy systems or quoting can leave the
+# backslash in the argument, which prevented the previous replacement.
+cmd=$(printf "%s" "$cmd" | sed 's/\\$PORT/$PORT/g')
+
+# Replace occurrences of "$PORT" (dollar-sign-P-O-R-T) with the
 # environment variable value (fallback to 8000 if not set).
 PORT_VAL=${PORT:-8000}
 cmd=$(printf "%s" "$cmd" | sed "s/\$PORT/${PORT_VAL}/g")
