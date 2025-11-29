@@ -1,1 +1,1 @@
-web: uvicorn api:app --host 0.0.0.0 --port $PORT --workers 1
+web: sh -lc "uvicorn api:app --host 0.0.0.0 --port $PORT --workers 1"

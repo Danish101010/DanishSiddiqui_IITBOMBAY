@@ -66,6 +66,8 @@ def pdf_to_images(pdf_path_or_bytes: Union[str, bytes], output_dir: Optional[str
         List of paths to rendered PNG images
     """
     import gc
+    # Lower DPI for faster processing and less memory (200 is usually enough for OCR/extraction)
+    dpi = 200
     if output_dir is None:
         output_dir = tempfile.mkdtemp()
     else:
@@ -311,58 +313,46 @@ def preprocess_image(
         os.makedirs(output_dir, exist_ok=True)
     
     image = Image.open(image_path)
-    image = image.convert('RGB')
-    
+    # Convert to grayscale for efficiency and clarity
+    image = image.convert('L')
     img_array = np.array(image)
-    
-    # Apply advanced preprocessing if available and requested
-    if use_advanced and ADVANCED_PREPROCESSING_AVAILABLE:
-        img_array = get_best_preprocessing_pipeline(img_array)
-    else:
-        # Fallback to basic preprocessing
-        img_array = _deskew_image(img_array)
-        img_array = _denoise_image(img_array)
-        
-        pil_image = Image.fromarray(img_array)
-        pil_image = _increase_contrast(pil_image, factor=1.5)
-        img_array = np.array(pil_image)
-    
-    # Always apply auto-crop
+
+    # Deskew
+    img_array = _deskew_image(img_array)
+    # Denoise
+    img_array = cv2.fastNlMeansDenoising(img_array, None, 10, 7, 21)
+    # Contrast enhancement
+    pil_image = Image.fromarray(img_array)
+    pil_image = ImageEnhance.Contrast(pil_image).enhance(1.5)
+    img_array = np.array(pil_image)
+    # Auto-crop margins
     img_array = _auto_crop_margins(img_array)
-    
+
+    # Save as processed full image
     full_image_path = os.path.join(output_dir, f"page_{page_no}_processed.png")
     Image.fromarray(img_array).save(full_image_path)
     
     crops_metadata = []
-    
+
+    # Only full page and 2-column crops for speed and accuracy
     full_crop = {
         'crop_id': f'p{page_no}_full',
         'path': full_image_path,
         'bbox': [0, 0, img_array.shape[1], img_array.shape[0]]
     }
     crops_metadata.append(full_crop)
-    
-    for num_cols in [2, 3, 4]:
-        column_crops = _generate_column_crops(img_array, num_cols)
-        for crop_id, crop_img, bbox in column_crops:
-            crop_path = os.path.join(output_dir, f"page_{page_no}_col{num_cols}_{crop_id}.png")
-            Image.fromarray(crop_img).save(crop_path)
-            crops_metadata.append({
-                'crop_id': f'p{page_no}_col{num_cols}_{crop_id}',
-                'path': crop_path,
-                'bbox': bbox
-            })
-    
-    sliding_crops = _generate_sliding_window_crops(img_array)
-    for crop_id, crop_img, bbox in sliding_crops:
-        crop_path = os.path.join(output_dir, f"page_{page_no}_slide_{crop_id}.png")
+
+    num_cols = 2
+    column_crops = _generate_column_crops(img_array, num_cols)
+    for crop_id, crop_img, bbox in column_crops:
+        crop_path = os.path.join(output_dir, f"page_{page_no}_col{num_cols}_{crop_id}.png")
         Image.fromarray(crop_img).save(crop_path)
         crops_metadata.append({
-            'crop_id': f'p{page_no}_slide_{crop_id}',
+            'crop_id': f'p{page_no}_col{num_cols}_{crop_id}',
             'path': crop_path,
             'bbox': bbox
         })
-    
+
     return {
         'page_no': page_no,
         'full_image_path': full_image_path,
