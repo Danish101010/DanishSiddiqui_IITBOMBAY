@@ -65,24 +65,36 @@ def pdf_to_images(pdf_path_or_bytes: Union[str, bytes], output_dir: Optional[str
     Returns:
         List of paths to rendered PNG images
     """
+    import gc
     if output_dir is None:
         output_dir = tempfile.mkdtemp()
     else:
         os.makedirs(output_dir, exist_ok=True)
-    
+
+    # Read PDF bytes
     if isinstance(pdf_path_or_bytes, bytes):
-        images = convert_from_bytes(pdf_path_or_bytes, dpi=dpi)
+        pdf_bytes = pdf_path_or_bytes
     else:
         with open(pdf_path_or_bytes, 'rb') as f:
             pdf_bytes = f.read()
-        images = convert_from_bytes(pdf_bytes, dpi=dpi)
-    
+
+    # Get number of pages (use pdf2image's get_page_count)
+    from pdf2image.pdf2image import pdfinfo_from_bytes
+    info = pdfinfo_from_bytes(pdf_bytes)
+    num_pages = info["Pages"]
+
     image_paths = []
-    for i, image in enumerate(images):
+    for i in range(num_pages):
+        # Process one page at a time
+        images = convert_from_bytes(pdf_bytes, dpi=dpi, first_page=i+1, last_page=i+1)
+        image = images[0]
         image_path = os.path.join(output_dir, f"page_{i+1}.png")
         image.save(image_path, 'PNG')
         image_paths.append(image_path)
-    
+        del image
+        del images
+        gc.collect()
+
     return image_paths
 
 
