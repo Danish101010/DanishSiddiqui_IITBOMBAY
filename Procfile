@@ -1,1 +1,1 @@
-web: python main.py
+web: sh -lc "python main.py"
