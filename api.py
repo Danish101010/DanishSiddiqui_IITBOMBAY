@@ -131,41 +131,108 @@ def send_gemini_multimodal(
                 print("Max retries reached, quota still exceeded")
                 raise
     
-    # Extract JSON from response
-    response_text = response.text.strip()
-    
-    # Remove markdown code blocks if present
+    # Extract JSON text from response robustly (avoid quick-accessor failures)
+    response_text = ""
+    try:
+        # Preferred: quick accessor
+        response_text = response.text.strip()
+    except Exception:
+        # Fallback: try to assemble text from candidate objects or the response repr
+        parts = []
+        try:
+            if hasattr(response, 'candidates') and response.candidates:
+                for c in response.candidates:
+                    # candidate may be dict-like or object
+                    if isinstance(c, dict):
+                        # common keys
+                        if 'content' in c:
+                            parts.append(c['content'])
+                        elif 'text' in c:
+                            parts.append(c['text'])
+                        else:
+                            parts.append(json.dumps(c))
+                    else:
+                        # object candidate: try common attributes
+                        text_attr = None
+                        for attr in ('content', 'text', 'display', 'output'):
+                            if hasattr(c, attr):
+                                val = getattr(c, attr)
+                                # if display is dict-like, try to extract printable text
+                                if isinstance(val, dict):
+                                    # try nested keys
+                                    for k in ('text', 'content', 'display_text'):
+                                        if k in val:
+                                            text_attr = val[k]
+                                            break
+                                    if text_attr:
+                                        break
+                                else:
+                                    text_attr = val
+                                    break
+                        if text_attr:
+                            parts.append(str(text_attr))
+                        else:
+                            parts.append(str(c))
+            else:
+                # Last resort: use string conversion
+                parts.append(str(response))
+        except Exception:
+            parts = [str(response)]
+
+        response_text = "\n".join(parts).strip()
+
+    # Remove markdown code fences if present
     if response_text.startswith('```json'):
         response_text = response_text[7:]
     elif response_text.startswith('```'):
         response_text = response_text[3:]
-    
+
     if response_text.endswith('```'):
         response_text = response_text[:-3]
-    
+
     response_text = response_text.strip()
-    
-    try:
-        extracted_data = json.loads(response_text)
-    except json.JSONDecodeError as e:
-        print(f"JSON decode error: {e}")
-        print(f"Response text (first 2000 chars): {response_text[:2000]}")
-        
-        # Try to salvage partial JSON by adding closing braces
+
+    # Try multiple sanitization strategies to handle malformed LLM output
+    import re
+    def try_loads(s):
         try:
-            # Count open braces and brackets
-            open_braces = response_text.count('{') - response_text.count('}')
-            open_brackets = response_text.count('[') - response_text.count(']')
-            
-            fixed_text = response_text
-            # Add missing closures
-            fixed_text += '}' * open_braces
-            fixed_text += ']' * open_brackets
-            
-            extracted_data = json.loads(fixed_text)
-            print("Successfully salvaged truncated JSON response")
-        except:
-            raise ValueError(f"Failed to parse Gemini response as JSON: {e}")
+            return json.loads(s)
+        except Exception:
+            return None
+
+    extracted_data = try_loads(response_text)
+    if extracted_data is None:
+        # Extract the first {...} block if the model prepended text
+        first_brace = response_text.find('{')
+        last_brace = response_text.rfind('}')
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            candidate = response_text[first_brace:last_brace+1]
+            # Remove trailing commas before closing braces/brackets
+            candidate = re.sub(r',\s*(\}|\])', r'\1', candidate)
+            extracted_data = try_loads(candidate)
+
+    if extracted_data is None:
+        # More aggressive fixes: try to remove extraneous text between items
+        candidate = re.sub(r'\n+', '\n', response_text)
+        candidate = re.sub(r',\s*,+', ',', candidate)
+        candidate = re.sub(r',\s*(\}|\])', r'\1', candidate)
+        candidate = re.sub(r'\,\s*\}', '}', candidate)
+        extracted_data = try_loads(candidate)
+
+    if extracted_data is None:
+        # If parsing still fails, do not raise: return a safe fallback that preserves raw text
+        print(f"JSON decode error: unable to parse response as JSON")
+        print(f"Response text (first 2000 chars): {response_text[:2000]}")
+        return {
+            'extracted_data': {
+                'raw_text': response_text
+            },
+            'token_usage': {
+                'input_tokens': getattr(response, 'usage_metadata', {}).get('prompt_token_count', 0) if hasattr(response, 'usage_metadata') else 0,
+                'output_tokens': getattr(response, 'usage_metadata', {}).get('candidates_token_count', 0) if hasattr(response, 'usage_metadata') else 0,
+                'total_tokens': getattr(response, 'usage_metadata', {}).get('total_token_count', 0) if hasattr(response, 'usage_metadata') else 0
+            }
+        }
     
     # Get token usage
     token_usage = {
