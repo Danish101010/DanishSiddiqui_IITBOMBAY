@@ -25,4 +25,10 @@ EXPOSE 8000
 ENV PORT=8000
 ENV PYTHONUNBUFFERED=1
 
+# Use startup wrapper as ENTRYPOINT so we can safely handle commands
+# that include a literal "$PORT" token passed from the platform UI.
+COPY startup.sh /app/startup.sh
+RUN chmod +x /app/startup.sh
+
+ENTRYPOINT ["/app/startup.sh"]
 CMD ["python", "main.py"]
