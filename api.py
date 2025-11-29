@@ -220,17 +220,30 @@ def send_gemini_multimodal(
         extracted_data = try_loads(candidate)
 
     if extracted_data is None:
-        # If parsing still fails, do not raise: return a safe fallback that preserves raw text
+        # If parsing still fails, persist the raw response to disk for debugging
         print(f"JSON decode error: unable to parse response as JSON")
         print(f"Response text (first 2000 chars): {response_text[:2000]}")
+        try:
+            from datetime import datetime
+            import uuid
+            debug_dir = Path("debug_responses")
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            fname = debug_dir / f"gemini_raw_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}.txt"
+            with open(fname, 'w', encoding='utf-8') as fh:
+                fh.write(response_text)
+            print(f"Saved raw Gemini response to: {fname}")
+        except Exception as _:
+            pass
+
+        usage = getattr(response, 'usage_metadata', None)
         return {
             'extracted_data': {
                 'raw_text': response_text
             },
             'token_usage': {
-                'input_tokens': getattr(response, 'usage_metadata', {}).get('prompt_token_count', 0) if hasattr(response, 'usage_metadata') else 0,
-                'output_tokens': getattr(response, 'usage_metadata', {}).get('candidates_token_count', 0) if hasattr(response, 'usage_metadata') else 0,
-                'total_tokens': getattr(response, 'usage_metadata', {}).get('total_token_count', 0) if hasattr(response, 'usage_metadata') else 0
+                'input_tokens': getattr(usage, 'prompt_token_count', 0) if usage is not None else 0,
+                'output_tokens': getattr(usage, 'candidates_token_count', 0) if usage is not None else 0,
+                'total_tokens': getattr(usage, 'total_token_count', 0) if usage is not None else 0
             }
         }
     
